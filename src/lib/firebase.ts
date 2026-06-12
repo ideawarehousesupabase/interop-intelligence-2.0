@@ -14,21 +14,17 @@ const firebaseConfig = {
 
 export const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
 
-import { getAuth, type Auth } from "firebase/auth";
-
 let app: FirebaseApp | null = null;
 let db: Firestore | null = null;
 let analytics: Analytics | null = null;
-let auth: Auth | null = null;
 
 if (isFirebaseConfigured) {
   app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
   db = getFirestore(app);
-  auth = getAuth(app);
   // Only initialize analytics in the browser
   if (typeof window !== "undefined") {
     analytics = getAnalytics(app);
   }
 }
 
-export { app, db, analytics, auth };
+export { app, db, analytics };

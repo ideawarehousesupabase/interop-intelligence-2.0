@@ -1,12 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-} from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
-import { auth, db } from "./firebase";
+import { collection, query, where, getDocs, doc, setDoc } from "firebase/firestore";
+import { db } from "./firebase";
 
 export interface User {
   id: string;
@@ -25,68 +19,96 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const SESSION_KEY = "ii2_user";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!auth) {
-      setLoading(false);
-      return;
-    }
-
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        if (db) {
-          try {
-            const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
-            if (userDoc.exists()) {
-              setUser({ id: firebaseUser.uid, ...userDoc.data() } as User);
-            } else {
-              // Fallback if doc doesn't exist
-              setUser({
-                id: firebaseUser.uid,
-                email: firebaseUser.email || "",
-                fullName: "User",
-                organization: "",
-                role: "User",
-              });
-            }
-          } catch (error) {
-            console.error("Error fetching user data:", error);
-            setUser(null);
-          }
-        }
-      } else {
-        setUser(null);
+    const raw = typeof window !== "undefined" ? localStorage.getItem(SESSION_KEY) : null;
+    if (raw) {
+      try {
+        setUser(JSON.parse(raw));
+      } catch {
+        // ignore corrupt session
       }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    }
+    setLoading(false);
   }, []);
 
+  const persist = (u: User | null) => {
+    setUser(u);
+    if (typeof window === "undefined") return;
+    if (u) localStorage.setItem(SESSION_KEY, JSON.stringify(u));
+    else localStorage.removeItem(SESSION_KEY);
+  };
+
   const login = async (email: string, password: string) => {
-    if (!auth) throw new Error("Firebase auth not configured");
-    await signInWithEmailAndPassword(auth, email, password);
+    if (!db) throw new Error("Firebase not configured");
+    
+    // Read operation (CRUD)
+    const q = query(
+      collection(db, "users"),
+      where("email", "==", email.toLowerCase()),
+      where("password", "==", password)
+    );
+    const querySnapshot = await getDocs(q);
+    
+    if (querySnapshot.empty) {
+      throw new Error("Invalid email or password");
+    }
+    
+    const userDoc = querySnapshot.docs[0];
+    const userData = userDoc.data();
+    
+    persist({
+      id: userDoc.id,
+      fullName: userData.fullName,
+      organization: userData.organization,
+      role: userData.role,
+      email: userData.email,
+    });
   };
 
   const register = async (data: Omit<User, "id"> & { password: string }) => {
-    if (!auth || !db) throw new Error("Firebase not configured");
-    const userCredential = await createUserWithEmailAndPassword(auth, data.email, data.password);
-    const { password, ...userData } = data;
-    await setDoc(doc(db, "users", userCredential.user.uid), {
-      ...userData,
+    if (!db) throw new Error("Firebase not configured");
+    
+    // Check if user exists (Read)
+    const q = query(
+      collection(db, "users"),
+      where("email", "==", data.email.toLowerCase())
+    );
+    const querySnapshot = await getDocs(q);
+    
+    if (!querySnapshot.empty) {
+      throw new Error("Email already registered");
+    }
+    
+    // Generate an ID
+    const id = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `u_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        
+    // Create operation (CRUD)
+    await setDoc(doc(db, "users", id), {
+      fullName: data.fullName,
+      organization: data.organization,
+      role: data.role,
+      email: data.email.toLowerCase(),
+      password: data.password 
     });
-    // The user state will be updated by onAuthStateChanged
+    
+    persist({
+      id,
+      fullName: data.fullName,
+      organization: data.organization,
+      role: data.role,
+      email: data.email.toLowerCase(),
+    });
   };
 
-  const logout = async () => {
-    if (auth) {
-      await signOut(auth);
-    }
-  };
+  const logout = () => persist(null);
 
   return (
     <AuthContext.Provider value={{ user, loading, login, register, logout }}>
